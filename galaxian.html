@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Galaxian</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+        :root {
+            --neon-red: #ff0055;
+            --neon-green: #00ff66;
+            --neon-blue: #00ffff;
+            --neon-yellow: #ffff00;
+            --dark-bg: #050510;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--dark-bg);
+            color: #fff;
+            overflow: hidden;
+            font-family: 'Press Start 2P', cursive;
+            user-select: none;
+        }
+
+        #gameCanvas {
+            display: block;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            right: 20px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            text-shadow: 2px 2px 0px #000;
+        }
+
+        .hud-text {
+            font-size: 20px;
+            color: #fff;
+        }
+
+        #game-over-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+            display: none;
+            /* Hidden by default */
+        }
+
+        #game-over-overlay h1 {
+            font-size: 60px;
+            color: var(--neon-red);
+            text-shadow: 0 0 10px var(--neon-red), 4px 4px 0px #fff;
+            margin-bottom: 20px;
+            animation: pulse 1s infinite alternate;
+        }
+
+        #game-over-overlay p {
+            font-size: 24px;
+            color: var(--neon-blue);
+            margin-top: 10px;
+        }
+
+        #restart-msg {
+            margin-top: 40px;
+            font-size: 16px;
+            color: var(--neon-yellow);
+            animation: blink 0.5s infinite;
+        }
+
+        @keyframes pulse {
+            from {
+                transform: scale(1);
+                text-shadow: 0 0 10px var(--neon-red);
+            }
+
+            to {
+                transform: scale(1.1);
+                text-shadow: 0 0 20px var(--neon-red), 0 0 40px var(--neon-red);
+            }
+        }
+
+        @keyframes blink {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="ui-layer">
+        <div class="hud-text">SCORE: <span id="score-el">0</span></div>
+        <div class="hud-text">HIGH SCORE: <span id="high-score-el">0</span></div>
+    </div>
+
+    <div id="game-over-overlay">
+        <h1>GAME OVER</h1>
+        <p>FINAL SCORE: <span id="final-score">0</span></p>
+        <div id="restart-msg">PRESS SPACE TO RESTART</div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        /**
+         * GALAXIAN PROTOTYPE
+         * 
+         * Core Classes:
+         * - InputHandler: Manages keyboard input
+         * - Vector2: Simple geometry helper
+         * - GameObject: Base class for entities
+         * - Star: Background particles
+         * - Particle: Explosion effects
+         * - Bullet: Player projectiles
+         * - Enemy: Alien invaders
+         * - Player: The hero ship
+         * - Game: Main controller
+         */
+
+        const CANVAS = document.getElementById('gameCanvas');
+        const CTX = CANVAS.getContext('2d');
+        const UI_SCORE = document.getElementById('score-el');
+        const UI_HIGH_SCORE = document.getElementById('high-score-el');
+        const UI_GAME_OVER = document.getElementById('game-over-overlay');
+        const UI_FINAL_SCORE = document.getElementById('final-score');
+
+        // Configuration
+        const CONFIG = {
+            PLAYER_SPEED: 5,
+            BULLET_SPEED: -10,
+            MAX_BULLETS: 2,
+            ENEMY_COLS: 10,
+            ENEMY_ROWS: 4,
+            ENEMY_PADDING: 50,
+            ENEMY_START_Y: 80,
+            ENEMY_SPEED_X: 2,
+            ENEMY_DROP_Y: 20,
+            PARTICLE_LIFE: 30,
+            COLORS: {
+                RED: '#ff0055',
+                GREEN: '#00ff66',
+                BLUE: '#00ffff',
+                YELLOW: '#ffff00',
+                WHITE: '#ffffff'
+            }
+        };
+
+        // --- UTILS ---
+        function degToRad(deg) {
+            return deg * Math.PI / 180;
+        }
+
+        function randomRange(min, max) {
+            return Math.random() * (max - min) + min;
+        }
+
+        function pointRectCollide(px, py, rx, ry, rw, rh) {
+            return px >= rx && px <= rx + rw && py >= ry && py <= ry + rh;
+        }
+
+        function rectIntersect(r1x, r1y, r1w, r1h, r2x, r2y, r2w, r2h) {
+            return !(r2x > r1w + r1x ||
+                r1x > r2w + r2x ||
+                r2y > r1h + r1y ||
+                r1y > r2h + r2y);
+        }
+
+        // --- CLASSES ---
+
+        class InputHandler {
+            constructor() {
+                this.keys = {};
+                window.addEventListener('keydown', e => this.keys[e.code] = true);
+                window.addEventListener('keyup', e => this.keys[e.code] = false);
+            }
+
+            isDown(code) {
+                return !!this.keys[code];
+            }
+        }
+
+        class Star {
+            constructor(w, h) {
+                this.x = Math.random() * w;
+                this.y = Math.random() * h;
+                this.z = Math.random() * 2 + 1;
+                this.alpha = Math.random();
+                this.twinkleDir = Math.random() > 0.5 ? 0.02 : -0.02;
+            }
+
+            update(speed) {
+                this.y += speed * this.z;
+                if (this.y > CANVAS.height) {
+                    this.y = 0;
+                    this.x = Math.random() * CANVAS.width;
+                }
+                this.alpha += this.twinkleDir;
+                if (this.alpha > 1 || this.alpha < 0.2) this.twinkleDir *= -1;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = `rgba(255, 255, 255, ${this.alpha})`;
+                const size = this.z * 0.8;
+                ctx.beginPath();
+                ctx.rect(this.x, this.y, size, size);
+                ctx.fill();
+            }
+        }
+
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.vx = randomRange(-3, 3);
+                this.vy = randomRange(-3, 3);
+                this.life = CONFIG.PARTICLE_LIFE;
+                this.color = color;
+                this.size = randomRange(2, 4);
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life--;
+                this.size *= 0.95;
+            }
+
+            draw(ctx) {
+                ctx.globalAlpha = Math.max(0, this.life / CONFIG.PARTICLE_LIFE);
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.rect(this.x, this.y, this.size, this.size);
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            }
+        }
+
+        class Bullet {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 4;
+                this.height = 12;
+                this.active = true;
+                this.speed = CONFIG.BULLET_SPEED;
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y < -20) this.active = false;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = CONFIG.COLORS.YELLOW;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = CONFIG.COLORS.YELLOW;
+                ctx.fillRect(this.x - this.width / 2, this.y, this.width, this.height);
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class EnemyBullet {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 6;
+                this.height = 12;
+                this.active = true;
+                this.speed = 6;
+            }
+
+            update() {
+                this.y += this.speed;
+                if (this.y > CANVAS.height + 20) this.active = false;
+            }
+
+            draw(ctx) {
+                ctx.fillStyle = CONFIG.COLORS.RED;
+                ctx.shadowBlur = 5;
+                ctx.shadowColor = CONFIG.COLORS.RED;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y + this.height);
+                ctx.lineTo(this.x - this.width / 2, this.y);
+                ctx.lineTo(this.x + this.width / 2, this.y);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+        }
+
+        class Enemy {
+            constructor(x, y, typeRow) {
+                this.active = true;
+
+                // Formation Logic
+                this.gridX = x; // Target position in formation relative to group
+                this.gridY = y;
+                this.x = x;
+                this.y = y;
+                this.width = 30;
+                this.height = 30;
+                this.hp = 1;
+
+                // Colors
+                const colors = [CONFIG.COLORS.RED, CONFIG.COLORS.RED, CONFIG.COLORS.BLUE, CONFIG.COLORS.GREEN];
+                this.color = colors[typeRow % colors.length];
+                this.baseColor = this.color;
+
+                // Animation
+                this.wingFrame = 0;
+                this.flashTime = 0;
+                this.angle = 0; // Rotation in radians
+
+                // State Machine
+                this.state = 'GRID'; // GRID, DIVING, RETURNING
+                this.diveProps = null;
+            }
+
+            takeDamage() {
+                this.hp--;
+                this.flashTime = 5;
+                if (this.hp <= 0) this.active = false;
+            }
+
+            startDive(playerX, playerY) {
+                this.state = 'DIVING';
+
+                // Cubic Bezier Points
+                // P0: Start
+                // P1: Control Out (Wide Arc)
+                // P2: Control In (Near Player)
+                // P3: Target (Below Player)
+
+                const direction = (Math.random() > 0.5) ? 1 : -1; // Random arc side
+
+                this.diveProps = {
+                    t: 0,
+                    speed: 0.01 + (Math.random() * 0.005), // Varying dive speeds
+                    p0: { x: this.x, y: this.y },
+                    p1: { x: this.x + (direction * 150), y: this.y + 100 },
+                    p2: { x: playerX - (direction * 50), y: playerY - 100 },
+                    p3: { x: playerX, y: CANVAS.height + 50 }
+                };
+            }
+
+            update(driftX, driftY, playerX, playerY) {
+                this.wingFrame += 0.1;
+                if (this.flashTime > 0) this.flashTime--;
+
+                // State Logic
+                if (this.state === 'GRID') {
+                    // Follow formation
+                    this.x += driftX;
+                    this.y += driftY;
+                    this.gridX += driftX; // Keep track of where we SHOULD be
+                    this.gridY += driftY;
+                    this.angle = 0;
+
+                } else if (this.state === 'DIVING') {
+                    const d = this.diveProps;
+                    d.t += d.speed;
+
+                    if (d.t >= 1) {
+                        // End of dive -> Wrap around
+                        this.y = -50;
+                        this.state = 'RETURNING';
+                        this.angle = Math.PI; // Face down
+                        return;
+                    }
+
+                    // Bezier Math (Cubic)
+                    const t = d.t;
+                    const it = 1 - t;
+
+                    // B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+                    const nextX = (Math.pow(it, 3) * d.p0.x) +
+                        (3 * Math.pow(it, 2) * t * d.p1.x) +
+                        (3 * it * Math.pow(t, 2) * d.p2.x) +
+                        (Math.pow(t, 3) * d.p3.x);
+
+                    const nextY = (Math.pow(it, 3) * d.p0.y) +
+                        (3 * Math.pow(it, 2) * t * d.p1.y) +
+                        (3 * it * Math.pow(t, 2) * d.p2.y) +
+                        (Math.pow(t, 3) * d.p3.y);
+
+                    // Calc Angle
+                    const dx = nextX - this.x;
+                    const dy = nextY - this.y;
+                    this.angle = Math.atan2(dy, dx) - (Math.PI / 2); // -90 adjustment for sprite
+
+                    this.x = nextX;
+                    this.y = nextY;
+                } else if (this.state === 'RETURNING') {
+                    // Fly back to grid pos
+                    const dx = this.gridX - this.x;
+                    const dy = this.gridY - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist < 5) {
+                        this.x = this.gridX;
+                        this.y = this.gridY;
+                        this.state = 'GRID';
+                        this.angle = 0;
+                    } else {
+                        // Normalize and move
+                        this.x += (dx / dist) * 4;
+                        this.y += (dy / dist) * 4;
+                        // Orient towards home
+                        this.angle = Math.atan2(dy, dx) - (Math.PI / 2);
+                    }
+                }
+
+                // Shooting Logic
+                if (this.active) {
+                    let chance = (this.state === 'DIVING') ? 0.05 : 0.0005; // High chance when diving
+                    if (Math.random() < chance) {
+                        return new EnemyBullet(this.x, this.y + 15);
+                    }
+                }
+
+                return null;
+            }
+
+            draw(ctx) {
+                if (!this.active) return;
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle); // Apply rotation
+
+                ctx.fillStyle = this.flashTime > 0 ? '#ffffff' : this.color;
+                ctx.shadowColor = this.color;
+                ctx.shadowBlur = 10;
+
+                // Alien body
+                ctx.beginPath();
+                ctx.moveTo(0, -10);
+                ctx.lineTo(10, -5);
+                ctx.lineTo(5, 10);
+                ctx.lineTo(-5, 10);
+                ctx.lineTo(-10, -5);
+                ctx.closePath();
+                ctx.fill();
+
+                // Wings
+                const wingSpan = 15 + Math.sin(this.wingFrame) * 5;
+                ctx.beginPath();
+                ctx.moveTo(5, 0);
+                ctx.lineTo(wingSpan, -10);
+                ctx.lineTo(5, 5);
+                ctx.fill();
+                ctx.beginPath();
+                ctx.moveTo(-5, 0);
+                ctx.lineTo(-wingSpan, -10);
+                ctx.lineTo(-5, 5);
+                ctx.fill();
+
+                ctx.fillStyle = '#fff';
+                ctx.shadowBlur = 0;
+                ctx.fillRect(-4, -6, 2, 2);
+                ctx.fillRect(2, -6, 2, 2);
+
+                ctx.restore();
+            }
+
+            getBounds() {
+                // Approximate bounds, since we rotate, box might be slightly off but good enough for arcade
+                return { x: this.x - 15, y: this.y - 15, w: 30, h: 30 };
+            }
+        }
+
+        class Boss extends Enemy {
+            constructor(x, y) {
+                super(x, y, 0);
+                this.width = 80;
+                this.height = 80;
+                this.hp = 20;
+                this.color = CONFIG.COLORS.YELLOW;
+                this.baseColor = CONFIG.COLORS.YELLOW;
+            }
+
+            update(dx, dy, playerX, playerY) {
+                // Boss dive logic inherited, but we boost shoot rate
+                const bullet = super.update(dx, dy, playerX, playerY);
+
+                if (this.active && !bullet) { // If super didn't shoot
+                    let chance = (this.state === 'DIVING') ? 0.08 : 0.01;
+                    if (Math.random() < chance) {
+                        return new EnemyBullet(this.x, this.y + 40);
+                    }
+                }
+                return bullet;
+            }
+
+            draw(ctx) {
+                if (!this.active) return;
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+
+                ctx.fillStyle = this.flashTime > 0 ? '#ffffff' : this.color;
+                ctx.shadowColor = this.color;
+                ctx.shadowBlur = 20;
+
+                // Big Boss Shape
+                ctx.beginPath();
+                ctx.moveTo(0, -40);
+                ctx.lineTo(30, -10);
+                ctx.lineTo(40, 20);
+                ctx.lineTo(0, 40);
+                ctx.lineTo(-40, 20);
+                ctx.lineTo(-30, -10);
+                ctx.closePath();
+                ctx.fill();
+
+                // Decorative details
+                ctx.fillStyle = CONFIG.COLORS.RED;
+                ctx.beginPath();
+                ctx.arc(0, 0, 10, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Wings
+                ctx.fillStyle = this.flashTime > 0 ? '#ffffff' : CONFIG.COLORS.GREEN;
+                const wFunc = Math.sin(this.wingFrame * 0.5) * 10;
+                ctx.fillRect(-60 + wFunc, -10, 20, 10);
+                ctx.fillRect(40 - wFunc, -10, 20, 10);
+
+                // Health Bar (Simple)
+                if (this.hp < 20) {
+                    ctx.fillStyle = '#f00';
+                    ctx.fillRect(-30, -50, 60, 5);
+                    ctx.fillStyle = '#0f0';
+                    ctx.fillRect(-30, -50, 60 * (this.hp / 20), 5);
+                }
+
+                ctx.restore();
+            }
+
+            getBounds() {
+                return { x: this.x - 40, y: this.y - 40, w: 80, h: 80 };
+            }
+        }
+
+        class Player {
+            constructor(game) {
+                this.game = game;
+                this.width = 40;
+                this.height = 40;
+                this.reset();
+            }
+
+            reset() {
+                this.x = CANVAS.width / 2;
+                this.y = CANVAS.height - 60;
+                this.vx = 0;
+                this.bullets = [];
+                this.lastShotTime = 0;
+            }
+
+            update(input) {
+                if (input.isDown('ArrowLeft')) this.x -= CONFIG.PLAYER_SPEED;
+                if (input.isDown('ArrowRight')) this.x += CONFIG.PLAYER_SPEED;
+
+                if (this.x < 20) this.x = 20;
+                if (this.x > CANVAS.width - 20) this.x = CANVAS.width - 20;
+
+                const now = Date.now();
+                if (input.isDown('Space')) {
+                    if (now - this.lastShotTime > 250 && this.bullets.length < CONFIG.MAX_BULLETS) {
+                        this.bullets.push(new Bullet(this.x, this.y - 20));
+                        this.lastShotTime = now;
+                    }
+                }
+
+                for (let i = this.bullets.length - 1; i >= 0; i--) {
+                    let b = this.bullets[i];
+                    b.update();
+                    if (!b.active) this.bullets.splice(i, 1);
+                }
+            }
+
+            draw(ctx) {
+                this.bullets.forEach(b => b.draw(ctx));
+
+                ctx.save();
+                ctx.translate(this.x, this.y);
+
+                ctx.fillStyle = '#eee';
+                ctx.beginPath();
+                ctx.moveTo(0, -20);
+                ctx.lineTo(15, 15);
+                ctx.lineTo(0, 5);
+                ctx.lineTo(-15, 15);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.fillStyle = CONFIG.COLORS.RED;
+                ctx.beginPath();
+                ctx.moveTo(0, -10);
+                ctx.lineTo(5, 5);
+                ctx.lineTo(-5, 5);
+                ctx.closePath();
+                ctx.fill();
+
+                ctx.shadowColor = CONFIG.COLORS.BLUE;
+                ctx.shadowBlur = 15;
+                ctx.fillStyle = CONFIG.COLORS.BLUE;
+                ctx.fillRect(-10, 15, 4, 4);
+                ctx.fillRect(6, 15, 4, 4);
+
+                ctx.restore();
+            }
+        }
+
+        class Game {
+            constructor() {
+                this.resize();
+                window.addEventListener('resize', () => this.resize());
+
+                this.input = new InputHandler();
+                this.player = new Player(this);
+
+                this.enemies = [];
+                this.enemyBullets = [];
+                this.particles = [];
+                this.stars = [];
+
+                this.score = 0;
+                this.highScore = 0;
+                this.level = 1;
+                this.gameOver = false;
+
+                this.enemyDir = 1;
+                this.baseEnemySpeed = 0.5;
+                this.diveTimer = 0;
+
+                for (let i = 0; i < 100; i++) {
+                    this.stars.push(new Star(CANVAS.width, CANVAS.height));
+                }
+
+                this.initLevel();
+                this.lastTime = 0;
+                this.loop = this.loop.bind(this);
+                requestAnimationFrame(this.loop);
+            }
+
+            resize() {
+                CANVAS.width = window.innerWidth;
+                CANVAS.height = window.innerHeight;
+                if (this.player) this.player.y = CANVAS.height - 60;
+            }
+
+            initLevel() {
+                this.enemies = [];
+                this.enemyBullets = [];
+                this.particles = [];
+                this.player.bullets = [];
+                this.updateScoreUI();
+
+                console.log("Starting Level " + this.level);
+                this.showLevelText = 120;
+
+                this.enemyDir = 1;
+                this.diveTimer = 0;
+
+                const isBossLevel = (this.level % 3 === 0);
+                const driftSpeed = this.baseEnemySpeed + (this.level * 0.1);
+
+                if (isBossLevel) {
+                    const bossX = CANVAS.width / 2;
+                    const bossY = 100;
+                    this.enemies.push(new Boss(bossX, bossY));
+
+                    const startX = (CANVAS.width - (8 * CONFIG.ENEMY_PADDING)) / 2;
+                    for (let c = 0; c < 8; c++) {
+                        this.enemies.push(new Enemy(startX + c * CONFIG.ENEMY_PADDING, bossY + 80, 0));
+                    }
+                } else {
+                    const rows = Math.min(6, 3 + Math.floor(this.level / 2));
+                    const cols = 8;
+                    const startX = (CANVAS.width - (cols * CONFIG.ENEMY_PADDING)) / 2;
+
+                    for (let r = 0; r < rows; r++) {
+                        for (let c = 0; c < cols; c++) {
+                            this.enemies.push(
+                                new Enemy(
+                                    startX + c * CONFIG.ENEMY_PADDING,
+                                    CONFIG.ENEMY_START_Y + r * 45,
+                                    r
+                                )
+                            );
+                        }
+                    }
+                }
+            }
+
+            spawnExplosion(x, y, color) {
+                for (let i = 0; i < 10; i++) {
+                    this.particles.push(new Particle(x, y, color));
+                }
+            }
+
+            restart() {
+                this.score = 0;
+                this.level = 1;
+                this.gameOver = false;
+                this.player.reset();
+                UI_GAME_OVER.style.display = 'none';
+                this.initLevel();
+            }
+
+            attemptDive() {
+                // Find candidates (not already diving)
+                const candidates = this.enemies.filter(e => e.state === 'GRID' && e.active);
+                if (candidates.length === 0) return;
+
+                // Prefer attacking from edges or bottom for chaos.
+                const attacker = candidates[Math.floor(Math.random() * candidates.length)];
+
+                if (attacker) {
+                    attacker.startDive(this.player.x, this.player.y);
+                }
+            }
+
+            update(dt) {
+                if (this.gameOver) {
+                    if (this.input.isDown('Space')) {
+                        this.restart();
+                    }
+                    return;
+                }
+
+                if (this.showLevelText > 0) this.showLevelText--;
+
+                // Helper counters
+                this.diveTimer++;
+                // Dive Frequency
+                const freq = Math.max(30, 120 - (this.level * 10));
+
+                if (this.diveTimer > freq) {
+                    this.attemptDive();
+                    if (this.level > 2 && Math.random() < 0.3) this.attemptDive();
+                    this.diveTimer = 0;
+                }
+
+                this.stars.forEach(s => s.update(1 + this.level * 0.1));
+                this.player.update(this.input);
+
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    this.particles[i].update();
+                    if (this.particles[i].life <= 0) this.particles.splice(i, 1);
+                }
+
+                for (let i = this.enemyBullets.length - 1; i >= 0; i--) {
+                    let eb = this.enemyBullets[i];
+                    eb.update();
+                    if (!eb.active) {
+                        this.enemyBullets.splice(i, 1);
+                        continue;
+                    }
+
+                    const pb = { x: this.player.x - 15, y: this.player.y - 15, w: 30, h: 30 };
+                    if (pointRectCollide(eb.x, eb.y + 6, pb.x, pb.y, pb.w, pb.h)) {
+                        this.endGame();
+                        return;
+                    }
+                }
+
+                // Enemy Global Movement (Formation Drift)
+                const speedMult = 1.0 + (this.level * 0.1);
+                const driftSpeed = 0.5 * this.enemyDir * speedMult;
+                let moveStepY = 0;
+
+                let gridEnemies = this.enemies.filter(e => e.state === 'GRID');
+                let leftMost = Infinity, rightMost = -Infinity;
+
+                if (gridEnemies.length > 0) {
+                    gridEnemies.forEach(e => {
+                        if (e.x < leftMost) leftMost = e.x;
+                        if (e.x > rightMost) rightMost = e.x;
+                    });
+
+                    if (rightMost > CANVAS.width - 30 && this.enemyDir > 0) {
+                        this.enemyDir = -1;
+                        moveStepY = CONFIG.ENEMY_DROP_Y;
+                    } else if (leftMost < 30 && this.enemyDir < 0) {
+                        this.enemyDir = 1;
+                        moveStepY = CONFIG.ENEMY_DROP_Y;
+                    }
+                }
+
+                // Update Enemies
+                this.enemies.forEach(e => {
+                    const shot = e.update(driftSpeed, moveStepY, this.player.x, this.player.y);
+                    if (shot) this.enemyBullets.push(shot);
+                });
+
+                // Check Collisions
+                for (let i = this.player.bullets.length - 1; i >= 0; i--) {
+                    let b = this.player.bullets[i];
+                    let bulletHit = false;
+
+                    for (let j = this.enemies.length - 1; j >= 0; j--) {
+                        let e = this.enemies[j];
+                        let eb = e.getBounds();
+
+                        if (pointRectCollide(b.x, b.y, eb.x, eb.y, eb.w, eb.h)) {
+                            this.spawnExplosion(b.x, b.y, e.color);
+                            e.takeDamage();
+                            bulletHit = true;
+
+                            if (!e.active) {
+                                let points = 100;
+                                if (e instanceof Boss) points = 1000;
+                                else if (e.state === 'DIVING') points = 200;
+
+                                this.enemies.splice(j, 1);
+                                this.score += points;
+                                this.updateScoreUI();
+                            }
+                            break;
+                        }
+                    }
+
+                    if (bulletHit) {
+                        b.active = false;
+                        this.player.bullets.splice(i, 1);
+                    }
+                }
+
+                // Enemy body vs Player
+                const pb = { x: this.player.x - 15, y: this.player.y - 15, w: 30, h: 30 };
+                for (let e of this.enemies) {
+                    let eb = e.getBounds();
+                    if (rectIntersect(pb.x, pb.y, pb.w, pb.h, eb.x, eb.y, eb.w, eb.h)) {
+                        this.endGame();
+                        return;
+                    }
+                    if (e.state === 'GRID' && e.y > CANVAS.height - 50) {
+                        this.endGame();
+                        return;
+                    }
+                }
+
+                if (this.enemies.length === 0) {
+                    this.level++;
+                    this.initLevel();
+                }
+            }
+
+            draw() {
+                CTX.fillStyle = CONFIG.COLORS.BLACK || '#050510';
+                CTX.fillRect(0, 0, CANVAS.width, CANVAS.height);
+
+                this.stars.forEach(s => s.draw(CTX));
+
+                if (!this.gameOver) {
+                    this.player.draw(CTX);
+                }
+
+                this.enemies.forEach(e => e.draw(CTX));
+                this.enemyBullets.forEach(b => b.draw(CTX));
+                this.particles.forEach(p => p.draw(CTX));
+
+                if (this.showLevelText > 0) {
+                    CTX.save();
+                    CTX.fillStyle = '#fff';
+                    CTX.font = '40px "Press Start 2P"';
+                    CTX.textAlign = 'center';
+                    CTX.shadowBlur = 10;
+                    CTX.shadowColor = CONFIG.COLORS.BLUE;
+                    CTX.fillText("LEVEL " + this.level, CANVAS.width / 2, CANVAS.height / 2);
+                    CTX.restore();
+                }
+            }
+
+            updateScoreUI() {
+                UI_SCORE.textContent = this.score;
+                if (this.score > this.highScore) {
+                    this.highScore = this.score;
+                    UI_HIGH_SCORE.textContent = this.highScore;
+                }
+            }
+
+            endGame() {
+                this.gameOver = true;
+                UI_FINAL_SCORE.textContent = this.score;
+                UI_GAME_OVER.style.display = 'flex';
+                this.spawnExplosion(this.player.x, this.player.y, '#fff');
+            }
+
+            loop(timestamp) {
+                const dt = timestamp - this.lastTime;
+                this.lastTime = timestamp;
+                this.update(dt);
+                this.draw();
+                requestAnimationFrame(this.loop);
+            }
+        }
+
+
+        // Start Game
+        window.onload = () => {
+            new Game();
+        };
+
+    </script>
+</body>
+
+</html>
